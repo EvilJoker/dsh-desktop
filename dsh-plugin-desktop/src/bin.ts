@@ -129,6 +129,19 @@ async function launchElectron(workspacePath?: string): Promise<number> {
   const args = workspacePath === undefined
     ? [mainPath]
     : [mainPath, `${DESKTOP_WORKSPACE_ARGUMENT}=${workspacePath}`]
+  // Optional Chrome DevTools Protocol enablement so tools like chrome-devtools-mcp
+  // can attach. Default port 9222, overridable via ELECTRON_REMOTE_DEBUGGING_PORT.
+  // Only enabled when ELECTRON_REMOTE_DEBUGGING=1 to avoid surprising local users.
+  if (process.env.ELECTRON_REMOTE_DEBUGGING === '1') {
+    const cdpPort = process.env.ELECTRON_REMOTE_DEBUGGING_PORT || '9222'
+    const cdpHost = process.env.ELECTRON_REMOTE_DEBUGGING_HOST || '127.0.0.1'
+    args.push(`--remote-debugging-port=${cdpPort}`)
+    args.push(`--remote-debugging-address=${cdpHost}`)
+    args.push('--remote-allow-origins=*')
+    process.stderr.write(
+      `${DESKTOP_PACKAGE_NAME}: Chrome DevTools Protocol listening on http://${cdpHost}:${cdpPort}\n`,
+    )
+  }
   return new Promise<number>((resolveExit, reject) => {
     const child = spawn(electronPath, args, {
       stdio: 'inherit',
