@@ -1,0 +1,22 @@
+# PyInstaller 输出（不提交到 git）
+build/
+dist/
+
+# 运行日志（正式日志在 ~/.desk-assistant/logs/，不要污染源码目录）
+*.log
+*.log.*
+
+# Python 编译产物
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# 编辑器临时文件
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# uv 生成的虚拟环境（不提交到 git）
+.venv/

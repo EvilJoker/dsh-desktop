@@ -1,0 +1,30 @@
+[project]
+name = "desk-assistant"
+version = "3.1.0"
+description = "云桌面常驻看板：半透明贴边 PyQt5 浮窗（server + panel + openclaw chat）"
+readme = "README.md"
+# 精确锁 Python 3.6.8（不写范围，避免后续 3.6.x/3.7+ 误用）
+# 3.6.8 是 NewStartOS 自带，pyinstaller 4.10 + PyQt5 5.15.6 都对此版本调过
+# 升 3.6.9 没必要、升 3.7+ 会让 pyinstaller 5.x 强依赖破坏 4.10 + PEP 587 等差异
+requires-python = "==3.6.8"
+license = { text = "Internal" }
+authors = [{ name = "Sun Qiyuan", email = "10312862@zte.intra" }]
+
+# 运行时依赖故意不列——PyQt5/flask/requests 装在 user site（/usr/bin/python3.6 能看到）
+# uv 不管理这些包，避免 uv sync 试图重装 PyQt5 wheel 覆盖源码编译产物（ABI 会坏）
+dependencies = []
+
+[project.optional-dependencies]
+# build-time 依赖：uv sync --extra build 装到 .venv/
+# pyinstaller 4.10 是最后一个支持 Python 3.6 的稳定版本（5.0+ 要 Py 3.7+）
+build = [
+    "pyinstaller==4.10",
+    "pyinstaller-hooks-contrib==2022.0",
+]
+
+[tool.uv]
+# 项目不是 wheel 分发（panel/ server/ 是裸脚本）
+package = false
+
+# 不引入 [tool.uv.scripts]：uv 0.11.6 不支持此字段（不在 [tool.uv.*] 合法字段列表中）
+# bash 脚本直接用 `bash script/*.sh` 调用

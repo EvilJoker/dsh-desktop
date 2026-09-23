@@ -1,0 +1,15 @@
+{
+  "name": "pet-adapter-electron",
+  "version": "0.1.0",
+  "description": "petpal 一键唤醒 DSH 工作台的 Electron 薄壳",
+  "main": "src/main.js",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev"
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  }
+}

@@ -1,0 +1,18 @@
+{
+  "openclaw": {
+    "url": "http://127.0.0.1:18789/v1/chat/completions",
+    "model": "openclaw",
+    "session_key": "agent:main:openai:00000000-0000-4000-8000-000000000001@topic:desk-assistant",
+    "chat_url": "http://127.0.0.1:18789/chat?lang=zh-CN&session=agent:main:openai:00000000-0000-4000-8000-000000000001@topic:desk-assistant"
+  },
+  "xiaoou": {
+    "base_url": "http://10.90.30.228:22004",
+    "model": "R-T-2-sun1-MiniMax-M2.7-highspeed",
+    "topic_id": 1001,
+    "source": "desk-assistant",
+    "auth": {
+      "header": "X-Emp-No",
+      "value": "10312862"
+    }
+  }
+}
