@@ -70,7 +70,7 @@ index ffab288..dda66cb 100644
 +									type: "button",
 +									variant: "outline",
 +									size: "sm",
-+									icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpen16, { size: 16 }),
++									icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenRegular, { size: 16 }),
 +									"aria-busy": nativePicking || void 0,
 +									disabled: parentInert,
 +									onClick: pickFromSystem,

@@ -1,4 +1,5 @@
-/** Official alpha.2 Desktop transport with a Host-independent native shell. */
+/** Official Desktop transport with a Host-independent native shell. */
+import { installDesktopShortcuts } from './keyboard.ts'
 import { spawn } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { writeFile } from 'node:fs/promises'
@@ -11,32 +12,43 @@ import { NEXT_PACKAGE, parseFeatures, profileName } from './profiles.ts'
 import { APP_URL, IPC, SHELL_URL } from './ipc.ts'
 import { WINDOWS_TITLEBAR_HEIGHT } from './windows-layout.ts'
 import { preferredDesktopLocale, resolveDesktopLocale } from './menu-locale.ts'
+import { NativeLocaleStore } from './native-locale.ts'
 import { NextDesktopRuntime } from './desktop-runtime.ts'
+import { probeSystemProxy, type DesktopSystemProxyProbe } from './system-proxy.ts'
 import { DEFAULT_PROFILE, NATIVE_ACCESS_HEADER, type DesktopCommand, type DesktopState, type DesktopSettingsPage } from './desktop-contract.ts'
 import { portsChanged, parsePreferences } from './desktop-preferences.ts'
 import { NativeDesktop, applyWindowMaterial } from './native-desktop.ts'
 import { desktopLanAddresses } from './lan-addresses.ts'
-import { createLanHttpsCertificate } from './lan-https-certificate.ts'
+import { createLanHttpsCertificate, lanHttpsCertificateDiagnostic } from './lan-https-certificate.ts'
 import { desktopTerminalStateDirectory, openDesktopTerminal } from './desktop-terminal.ts'
 import { bundledPnpmEntry, createPackageRunner } from './extensions.ts'
+import { applyDesktopPackageAgePolicy } from './pnpm-policy.ts'
 import { auxiliaryWindowChromeOptions, auxiliaryWindowHasCustomFrame } from '../../dsh-plugin-desktop-beta/src/auxiliary-window-options.ts'
 import { atomicJson, privateDirectory } from './private-files.ts'
-import { supportsMica, windowMaterial } from './window-material.ts'
+import { windowMaterial } from './window-material.ts'
 import { ONBOARDING_ARGUMENT, RECOVERY_ARGUMENT, SAFE_ARGUMENT, relaunchArguments } from './relaunch.ts'
 import { createNativePermissions, installMediaPermissions } from './electron-permissions.ts'
-import { readDataDirectory, validateDataDirectory } from './data-directory.ts'
+import { defaultDataDirectory, readDataDirectory, validateDataDirectory } from './data-directory.ts'
 import { maskSecrets } from './mask-secrets.ts'
 import { DesktopBrowserGuests } from './browser-guests.ts'
+import { PlatformLoginWindow } from './platform-login-window.ts'
 import { NextUpdates } from './updates.ts'
 import { NextUpdateInstaller } from './update-installer.ts'
 import { updateLabel } from './update-state.ts'
 
+// Inherit the package policy across the Host and every runtime child process.
+applyDesktopPackageAgePolicy(process.env)
+
 const root = dirname(NEXT_PACKAGE)
-const defaultHome = resolve(process.env.DSH_DESKTOP_NEXT_HOME ?? (app.isPackaged
-  ? join(app.getPath('appData'), 'DSH NEXT', 'home') : join(root, '.desktop-next', 'home')))
-const locationFile = join(defaultHome, 'desktop-next-location.json')
-const dataLocation = readDataDirectory(defaultHome)
+const defaultHome = resolve(process.env.DSH_DESKTOP_NEXT_HOME ?? defaultDataDirectory())
+// The location preference stays at its former Next-owned anchor so previously
+// chosen custom directories survive a change to the default home.
+const locationRoot = process.env.DSH_DESKTOP_NEXT_HOME ? defaultHome
+  : app.isPackaged ? join(app.getPath('appData'), 'DSH NEXT', 'home') : join(root, '.desktop-next', 'home')
+const locationFile = join(locationRoot, 'desktop-next-location.json')
+const dataLocation = readDataDirectory(defaultHome, locationRoot)
 const home = dataLocation.home
+const nativeLocale = new NativeLocaleStore(home)
 const electronData = join(home, 'electron-user-data')
 privateDirectory(electronData)
 app.setName('DSH NEXT')
@@ -47,6 +59,7 @@ protocol.registerSchemesAsPrivileged([{ scheme: 'dsh-app', privileges: {
 
 let mainWindow: BrowserWindow | undefined
 // Storage partitions outlive individual windows, so the guest owner is process-scoped.
+let desktopShortcuts: ReturnType<typeof installDesktopShortcuts> | undefined
 const browserGuests = new DesktopBrowserGuests(() => runtime.auth ? [new URL(runtime.auth.url).origin] : [])
 let shellWindow: BrowserWindow | undefined
 let recoveryRunner: ReturnType<typeof createPackageRunner> | undefined
@@ -57,9 +70,11 @@ let recoveryStopping: Promise<void> = Promise.resolve()
 let pendingSettings: DesktopSettingsPage | undefined
 let quitting = false
 let onboarding = false
+let onboardingSurfaceActive = false
 let onboardingComputerUse = false
 let relaunch: string[] | undefined
 let installingUpdate = false
+let systemProxy: DesktopSystemProxyProbe = {}
 let ownsInstance = false
 let windowsLanguage = 'en'
 const require = createRequire(NEXT_PACKAGE)
@@ -67,17 +82,38 @@ const webRoot = dirname(require.resolve('@deepseek-ai/dsh-web-frontend/dist/inde
 const version = (JSON.parse(readFileSync(NEXT_PACKAGE, 'utf8')) as { version: string }).version
 const t = (zh: string, en: string): string => windowsLanguage.toLowerCase().startsWith('zh') ? zh : en
 const runtime = new NextDesktopRuntime({
-  home, root, executable: process.execPath, addresses: () => [...desktopLanAddresses()],
-  certificate: addresses => createLanHttpsCertificate(electronData, addresses, {
-    available: () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
-    seal: bytes => safeStorage.encryptString(Buffer.from(bytes).toString('utf8')),
-    open: bytes => Buffer.from(safeStorage.decryptString(Buffer.from(bytes)), 'utf8'),
-  }),
+  home, root, executable: process.execPath, addresses: () => [...desktopLanAddresses()], systemProxy: () => systemProxy,
+  certificate: async addresses => {
+    try {
+      return await createLanHttpsCertificate(electronData, addresses, {
+        available: () => safeStorage.isEncryptionAvailable() && (process.platform !== 'linux' || safeStorage.getSelectedStorageBackend() !== 'basic_text'),
+        seal: bytes => safeStorage.encryptString(Buffer.from(bytes).toString('utf8')),
+        open: bytes => Buffer.from(safeStorage.decryptString(Buffer.from(bytes)), 'utf8'),
+      })
+    } catch (error) {
+      runtime.diagnostics.append(lanHttpsCertificateDiagnostic(error), 'warn')
+      throw error
+    }
+  },
   onFailure: () => { if (app.isReady()) openControls('recovery') },
   onChange: () => { if (app.isReady()) native.refresh() },
   onRestart: () => run({ type: 'restart' }),
   onTerminal: () => run({ type: 'terminal' }),
   onNotification: notification => native.notify(notification),
+  onPlatformLogin: (request) => {
+    if (quitting || !app.isReady()) return
+    if (request.action === 'close') {
+      platformLogin.close()
+      if (request.focus) openMain()
+      return
+    }
+    const url = platformLoginUrl(request.url)
+    // A system browser reaches the Host's loopback callback only while browser access is on;
+    // otherwise the built-in window replays the callback with the native credentials.
+    if (runtime.state().browserUrl !== null) {
+      void shell.openExternal(url).catch(error => runtime.diagnostics.append(String(error), 'warn'))
+    } else platformLogin.open(url)
+  },
   onPermission: async (action, permission) => {
     if (quitting) throw new Error('Desktop is shutting down')
     const snapshot = permissions.query(permission)
@@ -89,6 +125,11 @@ const runtime = new NextDesktopRuntime({
     }
     return snapshot
   },
+})
+const platformLogin = new PlatformLoginWindow({
+  BrowserWindow, session: partition => session.fromPartition(partition), host: () => runtime.auth,
+  parent: () => mainWindow, title: () => t('登录 DeepSeek', 'Sign in to DeepSeek'), dark: () => nativeTheme.shouldUseDarkColors,
+  warn: error => runtime.diagnostics.append(String(error), 'warn'),
 })
 const native = new NativeDesktop({ root, language: () => windowsLanguage, state, window: () => mainWindow,
   show: openMain, run, warn: error => runtime.diagnostics.append(String(error), 'warn') })
@@ -120,7 +161,7 @@ function state(): DesktopState {
       usingDefaultDirectory: home === defaultHome, error: String(error), diagnosticsFile, notice: recoveryNotice }
   }
   return { ...runtime.state(), recovery, onboarding, ...(onboarding ? { onboardingComputerUse } : {}), platform: process.platform, version, updates: updates.snapshot(),
-    trayAvailable: native.available, notificationsAvailable: Notification.isSupported(), windowsMicaSupported: process.platform === 'win32' && supportsMica() }
+    trayAvailable: native.available, notificationsAvailable: Notification.isSupported() }
 }
 function run(value: DesktopCommand): void { void command(value, 'native').catch(error => runtime.report(error)) }
 
@@ -131,6 +172,18 @@ function assertSender(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>,
 function assertDesktopSender(event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>): void {
   if (event.sender === mainWindow?.webContents) assertSender(event, mainWindow, APP_URL)
   else assertSender(event, shellWindow, 'dsh-app://shell/')
+}
+/**
+ * Carry the effective palette into the Platform login page, as upstream Desktop does.
+ * `system` resolves through `nativeTheme.shouldUseDarkColors`, which follows the theme
+ * source preload-theme.ts publishes.
+ * @param authorizeUrl - authorization URL already validated by host-process.ts.
+ * @returns the URL carrying `theme=light` or `theme=dark`.
+ */
+function platformLoginUrl(authorizeUrl: string): string {
+  const url = new URL(authorizeUrl)
+  url.searchParams.set('theme', nativeTheme.shouldUseDarkColors ? 'dark' : 'light')
+  return url.href
 }
 function show(window: BrowserWindow): void {
   if (quitting || window.isDestroyed()) return
@@ -181,14 +234,13 @@ function createWindow(preload: string, primary = false): BrowserWindow {
 
 function openSettings(page: DesktopSettingsPage = 'general'): void {
   if (quitting) return
-  if (onboarding) { openControls('onboarding'); return }
   if (runtime.recoveryMode || runtime.state().phase === 'error') { openControls('recovery'); return }
   pendingSettings = page
   openMain()
   mainWindow?.webContents.send(IPC.settingsOpen)
 }
 
-function openControls(page: 'general' | 'profiles' | 'create-profile' | 'tools' | 'recovery' | 'permissions' | 'onboarding' = 'general'): void {
+function openControls(page: 'general' | 'profiles' | 'create-profile' | 'tools' | 'recovery' | 'permissions' = 'general'): void {
   if (quitting) return
   if (page === 'general' || page === 'tools' || page === 'permissions') { openSettings(page === 'permissions' ? 'permissions' : 'general'); return }
   if (page === 'recovery' && !runtime.safeMode && !runtime.recoveryMode) {
@@ -203,16 +255,16 @@ function openControls(page: 'general' | 'profiles' | 'create-profile' | 'tools' 
     void recoveryStopping.catch(error => runtime.diagnostics.append(String(error), 'error'))
     native.refresh()
   }
-  const url = `${SHELL_URL}?locale=${windowsLanguage.toLowerCase().startsWith('zh') ? 'zh' : 'en'}&platform=${process.platform}&frame=${auxiliaryWindowHasCustomFrame()}#${page}`
+  const locale = nativeLocale.resolve(runtime.selected, windowsLanguage)
+  windowsLanguage = locale
+  const url = `${SHELL_URL}?locale=${locale}&platform=${process.platform}&frame=${auxiliaryWindowHasCustomFrame()}#${page}`
   const resize = (window: BrowserWindow): void => {
     const creating = page === 'create-profile'
     window.setResizable(!creating)
     window.setMinimumSize(creating ? 420 : 680, creating ? 330 : 560)
-    window.setSize(creating ? 480 : page === 'onboarding' ? 1040 : 850, creating ? 360 : page === 'onboarding' ? 720 : 800)
+    window.setSize(creating ? 480 : 850, creating ? 360 : 800)
   }
   if (shellWindow && !shellWindow.isDestroyed()) {
-    // Dock/tray activation must not reset an unfinished wizard or its selections.
-    if (page === 'onboarding' && shellWindow.webContents.getURL() === url) { show(shellWindow); return }
     resize(shellWindow)
     void shellWindow.loadURL(url).catch(error => runtime.diagnostics.append(String(error), 'error'))
     show(shellWindow); return
@@ -225,15 +277,26 @@ function openControls(page: 'general' | 'profiles' | 'create-profile' | 'tools' 
 function openMain(): void {
   if (quitting) return
   if (runtime.recoveryMode || runtime.state().phase === 'error') { openControls('recovery'); return }
-  if (onboarding) { openControls('onboarding'); return }
   if (mainWindow && !mainWindow.isDestroyed()) { show(mainWindow); return }
   mainWindow = createWindow('preload-app.cjs', true)
   const owner = mainWindow
   // The guest owner installs its own navigation, crash and destruction release paths.
-  browserGuests.bind(owner)
-  mainWindow.on('closed', () => { mainWindow = undefined })
+  browserGuests.bind(owner, (guest, name) => desktopShortcuts!.attachGuest(owner, guest, name))
+  desktopShortcuts!.attach(owner)
+  mainWindow.on('closed', () => { mainWindow = undefined; onboardingSurfaceActive = false })
   mainWindow.webContents.on('render-process-gone', (_event, details) => { if (!quitting) runtime.report(new Error(`Renderer: ${details.reason}`)) })
   mainWindow.webContents.on('preload-error', (_event, _path, error) => runtime.report(error))
+  // The Host log otherwise misses client slot failures: the renderer can retire
+  // an entry (and its portalled dialog) without crashing the Electron process.
+  mainWindow.webContents.on('console-message', (event, _level, legacyMessage) => {
+    // Electron versions differ: older runtimes pass the message as the third
+    // argument, newer ones put it on the event. Never assume either exists.
+    const message = typeof legacyMessage === 'string' ? legacyMessage : event?.message
+    if (typeof message !== 'string') return
+    if (!message.includes('[next-ui-diagnostic]') && !message.includes('slot entry crashed')
+      && !message.includes('client-modules:') && !message.includes('slot factory occurrence crashed')) return
+    runtime.diagnostics.append(maskSecrets(message.slice(0, 2048)), 'warn')
+  })
   mainWindow.webContents.on('did-fail-load', (_event, code, message, _url, isMain) => {
     if (isMain && code !== -3 && !quitting && mainWindow === owner && !owner.isDestroyed()) runtime.report(new Error(message))
   })
@@ -250,6 +313,7 @@ async function loadMainDocument(owner: BrowserWindow): Promise<void> {
 }
 
 async function reloadMain(): Promise<void> {
+  onboardingSurfaceActive = false
   const existing = mainWindow
   openMain()
   // A newly created window already started its first navigation in openMain().
@@ -330,19 +394,17 @@ async function command(value: unknown, source: 'app' | 'shell' | 'native' = 'app
   try {
     if (type === 'onboarding-complete' || type === 'onboarding-skip') {
       if (!onboarding || runtime.safeMode || runtime.recoveryMode || input.profile !== runtime.selected) throw new Error('Onboarding is unavailable for this Profile')
-      // The Host has not loaded this Profile yet. Commit choices before starting it.
-      runtime.profiles.finishOnboarding(runtime.selected, type === 'onboarding-complete'
-        ? { features: input.features, computerUse: input.computerUse } : undefined)
-      onboarding = false
-      shellWindow?.hide()
-      void runtime.start().catch(() => {})
-      openMain()
-      shellWindow?.close()
+      await runtime.restart(() => {
+        runtime.profiles.finishOnboarding(runtime.selected, type === 'onboarding-complete'
+          ? { features: input.features, computerUse: input.computerUse } : undefined)
+        onboarding = false
+      })
+      await reloadMain()
       return
     }
     if (type === 'restart-onboarding') {
+      if (onboarding) { openMain(); return }
       if (runtime.safeMode || runtime.recoveryMode) throw new Error('Onboarding is unavailable in safe or recovery mode')
-      if (onboarding) { openControls('onboarding'); return }
       if (!await confirmed(t('重新打开设置向导？', 'Reopen the setup wizard?'),
         t('应用将重启，并带入当前 Profile 的设置。正在运行的任务会中断。', 'The app will restart with your current Profile settings selected. Running tasks will be interrupted.'))) return
       relaunch = relaunchArguments(process.argv.slice(1), false, false, true)
@@ -367,10 +429,10 @@ async function command(value: unknown, source: 'app' | 'shell' | 'native' = 'app
       return
     }
     if (type === 'reload') {
-      if (runtime.recoveryMode || onboarding) { openMain(); return }
+      if (runtime.recoveryMode) { openMain(); return }
       await reloadMain(); return
     }
-    if (type === 'devtools') { openMain(); (runtime.recoveryMode || onboarding ? shellWindow : mainWindow)!.webContents.toggleDevTools(); return }
+    if (type === 'devtools') { openMain(); (runtime.recoveryMode ? shellWindow : mainWindow)!.webContents.toggleDevTools(); return }
     if (type === 'recovery-action') {
       await recoveryAction(input)
       return
@@ -601,9 +663,22 @@ async function recoveryAction(input: Record<string, unknown>): Promise<void> {
 async function main(): Promise<void> {
   await app.whenReady()
   if (quitting) return
+  let inputRevision = 0
+  let inputBlocked = false
+  desktopShortcuts = installDesktopShortcuts(() => mainWindow, app.getPath('userData'),
+    process.platform === 'darwin' ? 'macos' : process.platform === 'win32' ? 'windows' : 'linux', () => {}, () => {
+      const blocked = runtime.recoveryMode || onboardingSurfaceActive
+      if (blocked !== inputBlocked) { inputBlocked = blocked; inputRevision++ }
+      return { revision: inputRevision, blocked }
+    })
+  app.once('will-quit', () => { desktopShortcuts?.dispose() })
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(join(root, 'build', 'app-icon-mac.png'))
   // Recovery can open without a Host; Chromium's app locale may differ from the OS language.
   windowsLanguage = preferredDesktopLocale([...app.getPreferredSystemLanguages(), app.getLocale()])
+  // Read once, before anything can start a Host: a proxy client's "system proxy" switch sets no
+  // environment variable, and only Chromium can evaluate it (PAC/WPAD included). Changing the
+  // proxy takes effect on the next application start.
+  systemProxy = await probeSystemProxy(session.defaultSession)
   protocol.handle('dsh-app', async request => {
     const url = new URL(request.url)
     if (url.hostname === 'shell') {
@@ -630,6 +705,39 @@ async function main(): Promise<void> {
     runtime.report(new Error(message.slice(0, 4096)))
   })
   ipcMain.handle(IPC.state, event => { assertDesktopSender(event); return state() })
+  ipcMain.handle('dsh-desktop:setup-onboarding', async (event, request: unknown) => {
+    assertSender(event, mainWindow, APP_URL)
+    if (!request || typeof request !== 'object' || Array.isArray(request)) throw new Error('Invalid setup request')
+    const value = request as { action?: unknown; profile?: unknown; selection?: unknown; active?: unknown }
+    if (value.action === 'active') {
+      if (typeof value.active !== 'boolean') throw new Error('Invalid onboarding state')
+      onboardingSurfaceActive = value.active
+      return
+    }
+    if (value.action === 'read') {
+      if (runtime.safeMode || runtime.recoveryMode) return null
+      const features = runtime.profiles.features(runtime.selected)
+      return { required: onboarding, edition: 'next', profile: runtime.selected,
+        accountPending: !onboarding && runtime.profiles.accountSetupPending(runtime.selected),
+        computerUse: runtime.profiles.computerUseEnabled(runtime.selected),
+        input: { appVersion: version, profileName: runtime.selected, platform: process.platform,
+          mode: 'compatibility', macosMaterial: 'off', windowsMaterial: 'off', openBrowser: false, networkExposure: 'loopback',
+          market: features.market ? 'community-market' : features.dshMarket ? 'dsh-market' : 'disabled', aaEnabled: features.remoteControl,
+          notifications: { enabled: true, notifyOnTurnCompletion: true, notifyOnTurnFailure: true, notifyOnJobCompletion: false, notifyOnJobFailure: false } } }
+    }
+    if (value.action === 'dismiss-account') {
+      if (onboarding || value.profile !== runtime.selected || runtime.safeMode || runtime.recoveryMode) throw new Error('Account setup is unavailable')
+      runtime.profiles.dismissAccountSetup(runtime.selected)
+      return
+    }
+    if (value.action !== 'finish' || !onboarding || value.profile !== runtime.selected || runtime.safeMode || runtime.recoveryMode) throw new Error('Setup is unavailable')
+    if (value.selection === undefined) return command({ type: 'onboarding-skip', profile: value.profile })
+    const choice = value.selection as Record<string, unknown>
+    if (!choice || typeof choice !== 'object' || !['disabled', 'community-market', 'dsh-market'].includes(String(choice.market))
+      || typeof choice.aaEnabled !== 'boolean' || typeof choice.computerUse !== 'boolean') throw new Error('Invalid setup choices')
+    return command({ type: 'onboarding-complete', profile: value.profile, computerUse: choice.computerUse,
+      features: { market: choice.market === 'community-market', dshMarket: choice.market === 'dsh-market', remoteControl: choice.aaEnabled } })
+  })
   ipcMain.handle(IPC.settingsTake, event => {
     assertSender(event, mainWindow, APP_URL)
     const page = pendingSettings
@@ -693,9 +801,17 @@ async function main(): Promise<void> {
   })
   ipcMain.on(IPC.locale, (event, language: unknown) => {
     try { assertSender(event, mainWindow, APP_URL) } catch { return }
-    if (typeof language !== 'string' || !/^[a-zA-Z]+(?:-[a-zA-Z0-9]+)*$/u.test(language) || language === windowsLanguage) return
+    if (typeof language !== 'string' || !/^[a-zA-Z]+(?:-[a-zA-Z0-9]+)*$/u.test(language)) return
+    if (!runtime.safeMode) {
+      try { nativeLocale.remember(runtime.selected, language) } catch (error) { runtime.diagnostics.append(String(error), 'warn') }
+    }
+    if (language === windowsLanguage) return
     windowsLanguage = language
     native.refresh()
+  })
+  ipcMain.handle(IPC.localeRead, event => {
+    assertSender(event, mainWindow, APP_URL)
+    return { languages: [...app.getPreferredSystemLanguages(), app.getLocale()], preference: null }
   })
   nativeTheme.on('updated', () => { if (mainWindow && !mainWindow.isDestroyed()) applyWindowMaterial(mainWindow, runtime.preferences) })
   runtime.safeMode = process.argv.includes(SAFE_ARGUMENT)
@@ -728,8 +844,7 @@ async function main(): Promise<void> {
       const editItem = (label: string, keyCode: string, modifiers: Array<'control'>, accelerator?: string): MenuItemConstructorOptions => ({
         label, accelerator, click: () => {
           window.webContents.focus()
-          window.webContents.sendInputEvent({ type: 'keyDown', keyCode, modifiers })
-          window.webContents.sendInputEvent({ type: 'keyUp', keyCode, modifiers })
+          desktopShortcuts!.sendEditingKey(keyCode, modifiers)
         },
       })
       const items: MenuItemConstructorOptions[] = name === 'application' ? native.items() : [
@@ -743,13 +858,13 @@ async function main(): Promise<void> {
     })
     ipcMain.on(IPC.windowsAppearance, (event, language: unknown, color: unknown, symbolColor: unknown) => {
       try { assertSender(event, mainWindow, APP_URL) } catch { return }
-      if (typeof language === 'string' && /^[a-zA-Z]+(?:-[a-zA-Z0-9]+)*$/u.test(language)) windowsLanguage = language
+      // Caption paint can run before the official locale service initializes;
+      // IPC.locale is the only renderer authority for the application language.
       const validColor = (value: unknown): value is string => typeof value === 'string' && /^(?:#[\da-f]{3,8}|rgba?\([\d.,%\s]+\))$/iu.test(value)
       if (validColor(color) && validColor(symbolColor)) mainWindow!.setTitleBarOverlay({ color, symbolColor })
     })
   }
   if (runtime.recoveryMode) openControls('recovery')
-  else if (onboarding) openControls('onboarding')
   else { void runtime.start().catch(() => {}); openMain() }
   app.on('activate', openMain)
   app.on('window-all-closed', () => { if (process.platform !== 'darwin' && !native.available && !replacingWindow) app.quit() })
@@ -764,6 +879,7 @@ app.on('before-quit', event => {
     if (window && !window.isDestroyed()) window.hide()
   }
   native.close()
+  platformLogin.close()
   void Promise.all([updates.dispose(installingUpdate), (async () => { await recoveryRunner?.dispose(); await runtime.close() })()]).then(async () => {
     if (installingUpdate) {
       try { await updateInstaller.launch() }

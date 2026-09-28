@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { cleanupDisposableTree } from '../../dsh-plugin-desktop-beta/src/disposable-tree.ts'
 import { join } from 'node:path'
 import { DesktopBackendController } from './backend-controller.ts'
-import { DesktopHostFatalError, DesktopHostProcess } from './host-process.ts'
+import { DesktopHostFatalError, DesktopHostProcess, type DesktopPlatformLoginRequest } from './host-process.ts'
 import { DesktopPreferenceStore, parsePreferences } from './desktop-preferences.ts'
 import { DEFAULT_FEATURES, NextProfiles } from './profiles.ts'
 import { DEFAULT_PREFERENCES, DEFAULT_PROFILE, type DesktopBrowserLinks, type DesktopPreferences, type DesktopState, type DesktopNotification } from './desktop-contract.ts'
@@ -16,12 +16,15 @@ import { authenticateWebHost } from './web-document.ts'
 import { DesktopLanHttpsRuntime } from './lan-https-runtime.ts'
 import type { DesktopLanHttpsCertificate } from './lan-https-certificate.ts'
 import type { DesktopPermission, DesktopPermissionAction, DesktopPermissionSnapshot } from './permissions.ts'
+import { SYSTEM_PROXY_ENV, type DesktopSystemProxyProbe } from './system-proxy.ts'
 
 interface RuntimeOptions {
   home: string
   root: string
   executable: string
   addresses(): string[]
+  /** The system proxy main probed at startup; the Host decides whether it applies. */
+  systemProxy?(): DesktopSystemProxyProbe
   certificate(addresses: readonly string[]): Promise<DesktopLanHttpsCertificate>
   onFailure(): void
   onChange(): void
@@ -29,6 +32,7 @@ interface RuntimeOptions {
   onTerminal(): void
   onNotification(notification: DesktopNotification): void
   onPermission?(action: DesktopPermissionAction, permission: DesktopPermission): Promise<DesktopPermissionSnapshot>
+  onPlatformLogin?(request: DesktopPlatformLoginRequest): void
 }
 
 export class NextDesktopRuntime {
@@ -254,9 +258,10 @@ export class NextDesktopRuntime {
     const host = new DesktopHostProcess(options.executable, options.root, new NextProfiles(actualHome).directory(profile), undefined,
       { ...process.env, DSH_HOME: actualHome, DSH_NEXT_NATIVE_TOKEN: token,
         DSH_NEXT_PREFERENCES: JSON.stringify(effective), DSH_NEXT_TRUSTED_HOSTS: JSON.stringify(addresses),
+        [SYSTEM_PROXY_ENV]: JSON.stringify(options.systemProxy?.() ?? {}),
         ...(this.safeMode ? { DSH_TELEMETRY_DISABLED: '1' } : {}) },
       onFailure, undefined, undefined, join(options.root, 'lib', 'host.js'), options.onRestart, options.onNotification,
-      chunk => this.diagnostics.hostChunk(chunk), options.onTerminal, options.onPermission)
+      chunk => this.diagnostics.hostChunk(chunk), options.onTerminal, options.onPermission, undefined, options.onPlatformLogin)
     this.hostProcess = host
     return {
       start: async (): Promise<void> => {
@@ -275,7 +280,8 @@ export class NextDesktopRuntime {
         if (effective.browserAccess && effective.networkExposure === 'lan') {
           const edge = await lan.setEnabled(true)
           if (stopped) { await lan.stop(); return }
-          if (edge.state === 'failed') this.report(`LAN HTTPS: ${edge.errorCode}`)
+          // The optional LAN edge must not turn a ready loopback Host into recovery mode.
+          if (edge.state === 'failed') this.diagnostics.append(`LAN HTTPS: ${edge.errorCode}`, 'warn')
         }
         if (!this.safeMode) {
           try { this.recovery.checkpoint(this.selected) } catch (error) { this.diagnostics.append(`Recovery checkpoint: ${String(error)}`, 'warn') }

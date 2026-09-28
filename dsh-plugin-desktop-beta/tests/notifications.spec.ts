@@ -56,6 +56,7 @@ function createHarness(available: readonly OptionalService[] = ['jobs', 'session
   const enabled = new Set(available)
   const injections = new Map<OptionalService, (ctx: Context) => void>()
   const disposers = new Map<OptionalService, Array<() => void>>()
+  const rootDisposers: Array<() => void> = []
   let activeService: OptionalService | undefined
   let jobListener: ((event: unknown) => void | PromiseLike<void>) | undefined
   let sessionListener: ((session: Session, event: SessionEvent) => void | PromiseLike<void>) | undefined
@@ -132,6 +133,8 @@ function createHarness(available: readonly OptionalService[] = ['jobs', 'session
       const dispose = register()
       if (activeService !== undefined && typeof dispose === 'function') {
         disposers.set(activeService, [...(disposers.get(activeService) ?? []), dispose])
+      } else if (typeof dispose === 'function') {
+        rootDisposers.push(dispose)
       }
       return dispose
     },
@@ -168,6 +171,7 @@ function createHarness(available: readonly OptionalService[] = ['jobs', 'session
       teardown('sessions')
       teardown('jobs')
       teardown('settings')
+      for (const dispose of rootDisposers.splice(0).reverse()) dispose()
     },
   }
 }

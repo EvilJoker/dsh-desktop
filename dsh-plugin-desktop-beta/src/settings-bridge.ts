@@ -2,7 +2,7 @@
  * Edition-local adapter between the shared Desktop sources and the core
  * settings surface.
  *
- * Beta rides dsh 0.1.7, which replaced the `SettingsProvider` service
+ * Both Desktop editions ride dsh 0.1.7, which replaced the `SettingsProvider` service
  * with `SettingsForms`: a plugin no longer *registers* a namespace and schema,
  * it *declares* the editable subset of its own `Config` with `.volatile()` and
  * the Loader entry id becomes the settings namespace. Reads come from the live
@@ -76,7 +76,7 @@ export interface DesktopSettings {
   mode: DesktopShellMode
   /** Native translucency preference used on macOS custom-chrome modes. */
   macosMaterial: MacosWindowMaterial
-  /** Native backdrop preference used on Windows custom-chrome modes. */
+  /** Legacy Windows backdrop preference; every persisted value resolves to 'off'. */
   windowsMaterial: PersistedWindowsWindowMaterial
   /** Electron-native transparency preference used on Linux generations. */
   linuxMaterial: LinuxWindowMaterial
@@ -94,6 +94,8 @@ export interface DesktopSettings {
 export const DesktopSettingsSchema: z<DesktopSettings> = z.object({
   mode: z.union(['compatibility', 'extended', 'advanced'] as const).default('compatibility'),
   macosMaterial: z.union(['off', 'transparent'] as const).default(DEFAULT_MACOS_WINDOW_MATERIAL),
+  // Windows no longer offers a material. The removed Acrylic and Mica values
+  // stay schema-valid so older settings still boot; they resolve to 'off'.
   windowsMaterial: z.union(['off', 'acrylic', 'mica'] as const).default(DEFAULT_WINDOWS_WINDOW_MATERIAL),
   linuxMaterial: z.union(['off', 'transparent'] as const).default(DEFAULT_LINUX_WINDOW_MATERIAL),
   port: z.number().step(1).min(0).max(65_535).default(DESKTOP_DEFAULT_WEB_PORT),
@@ -112,7 +114,7 @@ export interface DesktopShellConfig {
   mode: Volatile<DesktopShellMode>
   /** Native translucency preference used on macOS custom-chrome modes. */
   macosMaterial: Volatile<MacosWindowMaterial>
-  /** Native backdrop preference used on Windows custom-chrome modes. */
+  /** Legacy Windows backdrop preference; every persisted value resolves to 'off'. */
   windowsMaterial: Volatile<PersistedWindowsWindowMaterial>
   /** Electron-native transparency preference used on Linux generations. */
   linuxMaterial: Volatile<LinuxWindowMaterial>
@@ -138,6 +140,7 @@ export interface DesktopShellConfig {
 export const DesktopShellConfig = z.object({
   mode: z.union(['compatibility', 'extended', 'advanced'] as const).default('compatibility').volatile(),
   macosMaterial: z.union(['off', 'transparent'] as const).default(DEFAULT_MACOS_WINDOW_MATERIAL).volatile(),
+  // Legacy Acrylic and Mica rows stay readable and resolve to 'off'.
   windowsMaterial: z.union(['off', 'acrylic', 'mica'] as const).default(DEFAULT_WINDOWS_WINDOW_MATERIAL).volatile(),
   linuxMaterial: z.union(['off', 'transparent'] as const).default(DEFAULT_LINUX_WINDOW_MATERIAL).volatile(),
   port: z.number().step(1).min(0).max(65_535).default(DESKTOP_DEFAULT_WEB_PORT).volatile(),

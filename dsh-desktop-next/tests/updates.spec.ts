@@ -70,16 +70,35 @@ it('shows progress and an actionable downloaded state in both languages', () => 
   expect(updateAction({ phase: 'preparing', installable: true })).toBeUndefined()
   expect(updateAction({ phase: 'ready', installable: true })).toBe('install-update')
 })
-it('validates every redirect and drops release headers before contacting artifact storage', async () => {
-  const request = vi.fn<UpdateRequest>(async (_url, _init) => new Response(null, { status: 302, headers: { location: 'https://modelscope.cn/models/t4wefan/deepseek-harness-desktop/resolve/master/next.dmg' } }))
-  request.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: 'https://modelscope.cn/models/t4wefan/deepseek-harness-desktop/resolve/master/next.dmg' } }))
+it('follows the ModelScope CDN redirect and drops release headers before contacting artifact storage', async () => {
+  const mirror = 'https://modelscope.cn/models/t4wefan/deepseek-harness-desktop/resolve/master/next.dmg'
+  const cdn = 'https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/next.dmg?signature=test'
+  const request = vi.fn<UpdateRequest>()
+  request.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: mirror } }))
+  request.mockResolvedValueOnce(new Response(null, { status: 302, headers: { location: cdn } }))
   request.mockResolvedValueOnce(new Response('artifact'))
   const result = await artifactRequest(request)('https://www.dshdesktop.cn/api/downloads/mac', { headers: { 'X-DSH-Desktop-Channel': 'next' } })
-  expect(result.finalUrl).toContain('modelscope.cn')
+  expect(result.finalUrl).toBe(cdn)
   expect(new Headers(request.mock.calls[1]?.[1]?.headers).get('X-DSH-Desktop-Channel')).toBeNull()
+  expect(new Headers(request.mock.calls[2]?.[1]?.headers).get('X-DSH-Desktop-Channel')).toBeNull()
+  expect(request.mock.calls[2]?.[1]?.credentials).toBe('omit')
   request.mockReset().mockResolvedValue(new Response(null, { status: 302, headers: { location: 'http://127.0.0.1/private' } }))
   await expect(artifactRequest(request)('https://www.dshdesktop.cn/api/downloads/mac', {})).rejects.toThrow()
   expect(request).toHaveBeenCalledOnce()
+})
+it('downloads a Next installer that settles on an external HTTPS CDN', async () => {
+  const cdn = 'https://cdn-lfs-cn-1.modelscope.cn/prod/lfs-objects/next.dmg'
+  const artifact = Buffer.alloc(1024); artifact.write('koly', 512)
+  const request = vi.fn<UpdateRequest>(async url => url.includes('/version')
+    ? Response.json({ version: '2.0.15-next.1', channel: 'next' })
+    : url.includes('/api/downloads/')
+      ? new Response(null, { status: 302, headers: { location: cdn } })
+      : new Response(artifact))
+  const { updates, options } = await fixture({ request })
+  await updates.download()
+  expect(updates.snapshot().phase).toBe('ready')
+  expect(options.prepare).toHaveBeenCalledOnce()
+  expect(request.mock.calls.at(-1)?.[0]).toBe(cdn)
 })
 it('serves only the private archive to the native updater and closes its loopback listener', async () => {
   const root = await mkdtemp(join(tmpdir(), 'next-feed-test-')); roots.push(root)

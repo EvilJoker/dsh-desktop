@@ -82,7 +82,7 @@ export function apply(ctx) {
     child.on('exit', () => rpc?.close(stderr || 'worker exited'))
     let shell: DesktopShellSpec | undefined
     const runtime = {
-      platform: 'win32', windowsBuild: 22631, locale: 'en',
+      platform: 'win32', locale: 'en',
       updates: { isPackaged: false, canDownload: false, currentVersion: '2.0.7-beta.1', statePath: join(home, 'updates') },
       schedule(spec: DesktopShellSpec) { shell = spec; return async () => {} },
       registerTrayItem() { return { refresh() {}, dispose() {} } },
@@ -100,6 +100,9 @@ export function apply(ctx) {
       selectionStatePath: join(home, 'selection.json'), marketUserDataDir: join(home, 'userdata'),
       releaseUserDataLocations: desktopReleaseUserDataLocations(home, join(home, 'userdata')),
       launchEnvironmentLayers: [],
+      // Empty is what the supervisor sends when the machine has no system proxy, so the Host still
+      // installs its outbound policy here and resolves every probe to a direct connection.
+      desktopProxyOverlay: {},
       desktopPnpmBootstrap: { activeProfileName: prepared.profile.name, activeProfileDir: prepared.profile.dir, homeDir: home,
         appExecutable: process.execPath, pnpmBinPath, electronVersion, nodeBinDir: pnpm.nodeBinDir,
         nodeShimPath: pnpm.nodeShimPath, clearEnvironmentPath: pnpm.clearEnvironmentPath,

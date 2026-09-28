@@ -20,10 +20,12 @@ describe('0.1.3 alpha.2 browse directory-picker client patch', () => {
       'validateDirectory?: (path: string) => Promise<boolean>;',
       '"browser.nativePicker": "使用 Windows 选择文件夹"',
       '"browser.nativePicker": "Choose with Windows"',
-      'IconFolderOpen16',
+      'icon: (0, react_jsx_runtime.jsx)(_deepseek_ai_dsh_client_ui_primitives.IconFolderOpenRegular, { size: 16 }),',
     ]) {
       expect(patch).toContain(marker)
     }
+    // 0.1.7 dropped the size-suffixed icon family; an undefined element type crashes the dialog.
+    expect(patch).not.toContain('IconFolderOpen16')
   })
 
   it('validates native and browser choices while keeping cancellation and busy work in the panel', () => {

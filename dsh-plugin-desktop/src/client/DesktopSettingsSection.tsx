@@ -21,6 +21,7 @@ export interface DesktopShellSettings {
   readonly mode: 'compatibility' | 'extended' | 'advanced'
   readonly macosMaterial: 'off' | 'transparent'
   readonly linuxMaterial: 'off' | 'transparent'
+  /** Legacy Windows value; Windows has no selectable material and renders opaque. */
   readonly windowsMaterial: 'off' | 'acrylic' | 'mica'
   readonly port: number
   readonly openBrowser: boolean
@@ -44,7 +45,6 @@ export interface DesktopSettingsSectionInjected {
   /** Installed Desktop product version rendered by the update section. */
   readonly version: string
   readonly initialMode: DesktopShellSettings['mode']
-  readonly micaSupported: boolean
   readonly setMode: (mode: DesktopShellSettings['mode']) => Promise<void>
   readonly desktopSettings: Pick<DesktopSettingsForm<DesktopShellSettings>, 'getSnapshot' | 'subscribe' | 'set'>
   readonly notificationSettings: Pick<DesktopSettingsForm<DesktopNotificationSettings>, 'getSnapshot' | 'subscribe' | 'set'>
@@ -356,7 +356,6 @@ export function DesktopSettingsSection({
   platform,
   version,
   initialMode,
-  micaSupported,
   setMode: persistMode,
   desktopSettings,
   notificationSettings,
@@ -525,11 +524,6 @@ export function DesktopSettingsSection({
           throw new Error(`dsh-plugin-desktop: invalid Linux material ${JSON.stringify(next)}`)
         }
         await desktopSettings.set('linuxMaterial', next)
-      } else if (platform === 'win32') {
-        if (next !== 'off' && (next !== 'mica' || !micaSupported)) {
-          throw new Error(`dsh-plugin-desktop: unavailable Windows material ${JSON.stringify(next)}`)
-        }
-        await desktopSettings.set('windowsMaterial', next)
       }
       if (capabilities?.materialRequiresRestart !== false) requestRestart()
     })
@@ -735,7 +729,8 @@ export function DesktopSettingsSection({
 
       </>}
 
-      <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-presentation-title">
+      {/* Window modes, or macOS's material choice; with neither the group would be empty. */}
+      {(capabilities?.windowModes !== false || platform === 'darwin') && <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-presentation-title">
         <div>
           <h3 id="dsh-desktop-presentation-title">{t('presentationTitle')}</h3>
           <p className="dshDesktopSettingsGroupIntro">{t('presentationIntro')}</p>
@@ -767,7 +762,7 @@ export function DesktopSettingsSection({
             status={mode === 'advanced' ? t('selected') : undefined}
           />
         </div>}
-        {platform !== 'linux' && (
+        {platform === 'darwin' && (
           <label className="dshDesktopSettingsMaterialField">
             <span className="dshDesktopSettingsMaterialCopy">
               <span className="dshDesktopSettingsChoiceTitle">{t('windowMaterial')}</span>
@@ -775,27 +770,16 @@ export function DesktopSettingsSection({
             </span>
             <select
               className="dshDesktopSettingsSelect"
-              value={platform === 'darwin'
-                ? desktop.value?.macosMaterial ?? 'transparent'
-                : desktop.value?.windowsMaterial === 'acrylic'
-                  || (!micaSupported && desktop.value?.windowsMaterial === 'mica')
-                  ? 'off'
-                  : desktop.value?.windowsMaterial ?? 'off'}
+              value={desktop.value?.macosMaterial ?? 'transparent'}
               disabled={!settingsWritable || busy !== undefined || restart !== 'none'}
               onChange={event => { setMaterial(event.currentTarget.value) }}
             >
               <option value="off">{t('windowMaterialOff')}</option>
-              {platform === 'darwin'
-                ? <option value="transparent">{t('windowMaterialTransparent')}</option>
-                : (
-                    <>
-                      {micaSupported && <option value="mica">{t('windowMaterialMica')}</option>}
-                    </>
-                  )}
+              <option value="transparent">{t('windowMaterialTransparent')}</option>
             </select>
           </label>
         )}
-      </section>
+      </section>}
 
       <section className="dshDesktopSettingsGroup" aria-labelledby="dsh-desktop-web-title">
         <div>

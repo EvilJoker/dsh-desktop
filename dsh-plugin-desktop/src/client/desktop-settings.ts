@@ -99,7 +99,6 @@ export function applyDesktopSettings(
       platform: environment.platform,
       version: environment.version,
       initialMode: environment.mode,
-      micaSupported: environment.micaSupported,
       setMode,
       desktopSettings,
       notificationSettings,

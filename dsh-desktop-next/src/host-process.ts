@@ -41,6 +41,21 @@ interface PlatformSessionEvent {
   readonly session: PlatformSession | null
 }
 
+/** Platform sign-in hand-off from the Host's account watcher (src/host/platform-login.ts). */
+export type DesktopPlatformLoginRequest = { readonly action: 'open'; readonly url: string } | { readonly action: 'close'; readonly focus: boolean }
+
+type PlatformLoginEvent = { readonly type: 'platform-login' } & DesktopPlatformLoginRequest
+
+/** Same destination rule as upstream Desktop's account backend: HTTPS, or loopback HTTP for development. */
+function isPlatformLoginDestination(value: unknown): boolean {
+  if (typeof value !== 'string') return false
+  try {
+    const url = new URL(value)
+    return !url.username && !url.password
+      && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
+  } catch { return false }
+}
+
 interface InjectionsEvent {
   readonly type: 'injections'
   readonly requestId: number
@@ -48,7 +63,7 @@ interface InjectionsEvent {
   readonly error?: string
 }
 
-type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | InjectionsEvent | { type: 'permission'; requestId: number; action: DesktopPermissionAction; permission: DesktopPermission } | { type: 'browser-access'; requestId: number; error?: string } | { type: 'notification'; notification: DesktopNotification } | { readonly type: 'shutdown-complete' } | { readonly type: 'desktop-action'; readonly action: 'restart' | 'terminal' } | {
+type DesktopHostEvent = ReadyEvent | FatalEvent | PlatformSessionEvent | PlatformLoginEvent | InjectionsEvent | { type: 'permission'; requestId: number; action: DesktopPermissionAction; permission: DesktopPermission } | { type: 'browser-access'; requestId: number; error?: string } | { type: 'notification'; notification: DesktopNotification } | { readonly type: 'shutdown-complete' } | { readonly type: 'desktop-action'; readonly action: 'restart' | 'terminal' } | {
   readonly type: 'update-tasks'
   readonly requestId: number
   readonly active: boolean
@@ -82,6 +97,8 @@ function isDesktopHostEvent(message: unknown): message is DesktopHostEvent {
           && (url.protocol === 'https:' || (url.protocol === 'http:' && ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname)))
       } catch { return false }
     }
+    case 'platform-login':
+      return (candidate.action === 'close' && typeof candidate.focus === 'boolean') || (candidate.action === 'open' && isPlatformLoginDestination(candidate.url))
     case 'fatal':
       return typeof candidate.message === 'string' && (candidate.diagnostic === undefined || typeof candidate.diagnostic === 'string')
     case 'notification':
@@ -179,6 +196,7 @@ export class DesktopHostProcess {
    *   `office-skills` resources fail Host startup.
    * @param packageManager - Bundled pnpm entry and Node launcher directory, scoped to package operations.
    * @param onPlatformSession - Private credential updates for embedded Platform views.
+   * @param onPlatformLogin - Opens a sign-in attempt's authorization page, or settles an ended attempt.
    */
   constructor(
     private readonly node: string,
@@ -196,6 +214,7 @@ export class DesktopHostProcess {
     private readonly onTerminal?: () => void,
     private readonly onPermission?: (action: DesktopPermissionAction, permission: DesktopPermission) => Promise<DesktopPermissionSnapshot>,
     private readonly onPlatformSession?: (session: PlatformSession | null) => void,
+    private readonly onPlatformLogin?: (request: DesktopPlatformLoginRequest) => void,
   ) {}
 
   /**
@@ -232,6 +251,11 @@ export class DesktopHostProcess {
       }
       if (message.type === 'ready') this.readyResolve({ url: message.url, injections: message.injections })
       else if (message.type === 'platform-session') this.onPlatformSession?.(message.session)
+      else if (message.type === 'platform-login') {
+        if (!this.stopping && !this.failureReported) {
+          this.onPlatformLogin?.(message.action === 'open' ? { action: 'open', url: message.url } : { action: 'close', focus: message.focus })
+        }
+      }
       else if (message.type === 'shutdown-complete') {
         if (this.stopping) this.shutdownCompleted = true
         else this.fail(new Error('dsh desktop host acknowledged an unrequested shutdown'))

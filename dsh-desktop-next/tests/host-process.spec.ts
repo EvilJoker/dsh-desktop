@@ -275,4 +275,28 @@ describe('desktop host process', () => {
     const host = hostProcess(projectWithHost(`process.send({ type: 'platform-session', session: ${session} })`))
     await expect(host.start()).rejects.toThrow('invalid IPC event')
   })
+
+  it('hands Platform sign-in pages and ended attempts to the shell', async () => {
+    const url = 'https://platform.deepseek.com/dsh/authorize?state=fixture'
+    const runtime = projectWithHost(HTTP_HOST.replace("process.send({ type: 'ready'",
+      `process.send({ type: 'platform-login', action: 'open', url: '${url}' }); process.send({ type: 'platform-login', action: 'close', focus: true }); process.send({ type: 'ready'`))
+    const login = vi.fn()
+    const host = new DesktopHostProcess(process.execPath, runtime, runtime, undefined, process.env, undefined,
+      undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, undefined, login)
+    hosts.push(host)
+    await host.start()
+    expect(login.mock.calls).toEqual([[{ action: 'open', url }], [{ action: 'close', focus: true }]])
+  })
+
+  it.each([
+    ["{ type: 'platform-login', action: 'open', url: 'http://platform.deepseek.com/dsh/authorize' }", 'a plaintext non-loopback page'],
+    ["{ type: 'platform-login', action: 'open', url: 'https://user:pass@platform.deepseek.com/' }", 'embedded userinfo'],
+    ["{ type: 'platform-login', action: 'open', url: 'file:///C:/Windows/System32/calc.exe' }", 'a local file'],
+    ["{ type: 'platform-login', action: 'open' }", 'a missing page'],
+    ["{ type: 'platform-login', action: 'run', url: 'https://platform.deepseek.com/' }", 'an unknown action'],
+    ["{ type: 'platform-login', action: 'close' }", 'a close without a focus decision'],
+  ])('refuses a Platform sign-in request %s (%s)', async (event) => {
+    const host = hostProcess(projectWithHost(`process.send(${event})`))
+    await expect(host.start()).rejects.toThrow('invalid IPC event')
+  })
 })

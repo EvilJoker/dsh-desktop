@@ -105,12 +105,12 @@ function trackTurn(
 export function apply(ctx: Context, config: DesktopNotificationConfig): void {
   let settings = DEFAULT_NOTIFICATION_SETTINGS
 
-  ctx.inject(['settings'], (settingsCtx) => {
-    settingsCtx.effect(
-      () => bindDesktopNotificationSettings(settingsCtx, config, (next) => { settings = next }),
-      'dsh-plugin-desktop: native notification settings',
-    )
-  })
+  // Loader sends volatile updates only to this plugin's fiber. An injected
+  // settings child owns a different fiber and cannot receive those updates.
+  ctx.effect(
+    () => bindDesktopNotificationSettings(ctx, config, (next) => { settings = next }),
+    'dsh-plugin-desktop: native notification settings',
+  )
 
   ctx.inject(['jobs'], (jobsCtx) => {
     jobsCtx.effect(

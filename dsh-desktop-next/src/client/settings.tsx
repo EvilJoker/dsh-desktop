@@ -27,7 +27,7 @@ export function NextDesktopSettings({ adapter, language, onOpenPlugins }: { adap
   const t = desktopTranslate(language)
   return <div data-next-desktop-settings=""><DesktopSettingsSection
     t={t} api={adapter.api} version={state?.version ?? ''} platform={state?.platform === 'darwin' || state?.platform === 'win32' ? state.platform : 'linux'}
-    initialMode="compatibility" micaSupported={state?.windowsMicaSupported ?? false}
+    initialMode="compatibility"
     setMode={async () => { throw new Error('Window modes are not supported in Next') }}
     desktopSettings={adapter.desktopSettings} notificationSettings={adapter.notificationSettings}
     capabilities={{ windowModes: false, pluginSelectors: false, updates: false, materialRequiresRestart: false, nativeLanConfirmation: true, jobNotifications: false }}

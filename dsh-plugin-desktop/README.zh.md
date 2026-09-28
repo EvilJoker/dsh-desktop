@@ -40,7 +40,6 @@ DSH home `settings.yaml` 文档中的 `dsh-desktop.mode` 字段是单一事实�
 dsh-desktop:
   mode: compatibility # compatibility、extended 或 advanced
   macosMaterial: transparent # off 或 transparent
-  windowsMaterial: acrylic # off、acrylic，系统支持时还可用 mica
 ```
 
 Launcher 会在组合一个 generation 之前，读取当前 `@deepseek-ai/dsh-settings-file` row 解析到的同一份文件。Host 通过标准 settings service 注册 `dsh-desktop` namespace。profile manifest 中没有平行的模式值。
@@ -73,7 +72,7 @@ Cordis row 会在 profile 激活期间登记原生窗口参数。Launcher 只在
 
 DOM 会把操作栏声明为 Desktop frame，并把下移后的上游 root 声明为它的 content viewport。`shell.overlay` 会成为 fixed 插件 surface 的 containing block，直接 portal 到 `body` 的对话框则获得相同的内容偏移；两条路径都会被限制在 36 像素 frame 下方，不会再压暗或拦截顶栏。
 
-自定义窗口材质独立于模式设置。macOS 可选“关闭”或“透明材质”；Windows 可选“关闭”和原生“亚克力”，仅 Windows 11 build 22621 及以上显示 Mica。Windows 10 因此使用真正的原生亚克力，而不是 CSS 模拟。已持久化但系统不支持的 Mica 会按能力门槛回退到亚克力。切换模式或材质都会执行有序重启。
+自定义窗口材质独立于模式设置。macOS 可选“关闭”或“透明材质”。Windows 不提供材质选项，所有 Windows 窗口都是普通的不透明窗口。已移除的 `windowsMaterial` 旧值 `acrylic` 和 `mica` 仍可读取，旧设置照常启动，两者都按关闭处理。切换模式或材质都会执行有序重启。
 
 ## 增强模式
 
@@ -90,6 +89,8 @@ desktop sidebar surface 会把上游 sidebar-fill token 局部设为透明，因
 在 macOS 上，增强窗口恢复最初的 hidden-inset 几何：红绿灯位于 `x=16, y=16`，内容使用紧凑的 20 CSS 像素 inset，原生拖拽区域为 32 CSS 像素。其 90 CSS 像素收起列会把官方 56 像素 rail 居中放在该紧凑 inset 下方，并继续支持可选的原生 `sidebar` vibrancy。按钮、链接、输入框、可编辑字段、菜单、标签页、开关、对话框与显式 `.dshDesktopNoDrag` contribution 会通过精确的 `app-region: no-drag` 排除规则保持可交互。在 Windows 上，官方 sidebar 保持兼容模式几何：收起 56 像素、默认展开 280 像素，并沿用相同的上游过渡行为；透明 surface 会透出当前系统支持且用户选择的材质。增强窗口保留最初的 32 CSS 像素内部 caption row 与原生 overlay 控件；这套几何与兼容/扩展模式的 36 像素独立 frame 无关。Linux 会拒绝增强模式，而不会静默降级到与持久化设置不同的呈现。
 
 ## 开发
+
+根目录的构建、开发启动及打包命令会先运行 `corepack yarn market:prepare`，查询 npm 的 `latest`，并同步 Stable、Beta、Next 内置的 `dshmarket`。解析后的精确版本与锁文件仍可复现，应一同提交。Desktop 的市场自更新与回滚兼容补丁会保留；查询、安装或补丁应用失败时停止准备，不会静默沿用旧版。`corepack yarn market:check` 只检查版本新鲜度，不修改文件。已安装应用不会在启动时下载或热替换插件；现有包选择机制会在应用与当前 Profile 已安装的副本中选择较新版本，不删除任何一方。
 
 该包由仓库根目录的 Yarn workspace 管理。相邻的 `deepseek-harness/` checkout 仍是独立的上游 pnpm 项目，不属于 Yarn workspace。请从仓库根目录安装并验证 DSH Desktop：
 
@@ -269,6 +270,6 @@ corepack.cmd yarn dist:win-portable
 - `dshmarket@1.2.3` 仍是用户可选安装的第三方 package，而不是内置 marketplace。只有重新审计的版本同时消费可选 Desktop service、保留普通 DSH fallback，并包含再分发所需的完整 license notice 后，才会重新评估预装。
 - 更新交接只验证下载容器，不验证 publisher 身份。macOS 仍要求用户从已打开的 DMG 替换应用；Windows 会运行已下载的 NSIS 安装器，但本地 `dist:win` 产物没有签名。签名产物、Authenticode/publisher 校验、SmartScreen 信誉与原生升级测试仍是发布 gate。
 - 共享 carrier 使用 HTTP 与 WebSocket，而不是 Electron IPC；默认只绑定 loopback，并支持经过明确确认的全接口局域网监听。替换 carrier 需要上游 DSH 提供 transport 扩展点，不属于该独立包的范围。
-- 该项目同时固定到已发布的 DSH `0.1.5-rc.2` family 及其对应的官方 `deepseek-harness/` release 源码。产品构建使用 `upstream.json` 记录并提交到仓库的官方 profile 运行时包，不会直接链接源码 checkout。
-- DSH `0.1.5-rc.2` 会将受支持的历史会话迁移至 V3，并保留原始日志。升级后写入的会话无法由旧版 `0.1.2-rc.1` 运行时读取。
+- Stable、Beta 和 Next 均固定到已发布的 DSH `0.1.7-rc.1` family 及其对应的官方 `deepseek-harness/` release 源码。产品构建使用 `upstream.json` 记录并提交到仓库的官方 profile 运行时包，不会直接链接源码 checkout。
+- DSH `0.1.7-rc.1` 会将受支持的历史会话迁移至 V4，并保留原始日志。升级后写入的会话无法由此前 Stable 使用的 `0.1.5-rc.2` 运行时读取。
 - `package:dir` 是用于 smoke 的未封装产物。`dist:win` 会额外生成未签名的 NSIS 测试安装包，但不会建立 Authenticode 身份或 SmartScreen 信誉。安装与升级行为、原生通知与终端、Windows ACL sandbox，以及每台目标机器上的原生材质外观仍属于目标平台验证边界。

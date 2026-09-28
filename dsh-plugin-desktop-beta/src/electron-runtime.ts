@@ -18,6 +18,8 @@ import { desktopTerminalStateDirectory, openDesktopTerminal } from './desktop-te
 import { showDesktopMessageBox } from './desktop-dialog-window.ts'
 import { packagedDependencyPath } from './packaged-runtime-path.ts'
 import { ElectronShellGeneration } from './electron-shell-generation.ts'
+import { isPlatformLoginDestination, type DesktopPlatformLoginRequest } from './platform-login.ts'
+import { PLATFORM_LOGIN_TITLE, platformLoginUrl } from './platform-login-window.ts'
 import type { DesktopOpenWorkspaceDelivery } from './launch-workspace-contract.ts'
 import { electronPlatformStrategy, type ElectronPlatformStrategy } from './electron-platform.ts'
 import type {
@@ -67,7 +69,6 @@ import {
 } from './windows-volume-diagnostics.ts'
 import { ElectronWorkspaceAdmission } from './workspace-admission.ts'
 import { ProfileCreateWindow, type ProfileCreateWindowOptions } from './profile-create-window.ts'
-import { windowsBuildNumber } from './window-material.ts'
 import { desktopNativeCopy } from './native-dialog-copy.ts'
 import {
   FileMainWindowStateStore,
@@ -102,9 +103,9 @@ const NULL_BODY_STATUSES = new Set([204, 205, 304])
 
 /**
  * Download-request adapter over Electron `net.request`. `net.fetch` cannot
- * back the download origin gate: its Response carries an empty `url` (a
+ * supply the HTTPS check: its Response carries an empty `url` (a
  * documented Electron limitation), so redirects are followed here and the
- * settled URL is reported alongside the response for the gate to validate.
+ * settled URL is reported alongside the response for validation.
  */
 export function requestDesktopArtifact(url: string, init: RequestInit): Promise<UpdateArtifactResponse> {
   return new Promise((resolve, reject) => {
@@ -178,8 +179,8 @@ export function requestDesktopArtifact(url: string, init: RequestInit): Promise<
 
 /** Native adapter used by the DSH Desktop launcher and owned by its Cordis shell plugin. */
 export class ElectronDesktopRuntime implements DesktopRuntime {
+  setupOnboarding?: import('./setup-onboarding-bridge.ts').DesktopOnboardingBridge
   readonly platform: DesktopPlatform
-  readonly windowsBuild: number | undefined
   private readonly platformStrategy: ElectronPlatformStrategy
   readonly updates: DesktopUpdateAdapter
 
@@ -209,7 +210,6 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   ) {
     this.platformStrategy = electronPlatformStrategy()
     this.platform = this.platformStrategy.platform
-    this.windowsBuild = this.platform === 'win32' ? windowsBuildNumber() : undefined
     const platformStrategy = this.platformStrategy
     this.workspaceAdmission = new ElectronWorkspaceAdmission({
       platform: this.platform,
@@ -326,6 +326,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         platform: this.platformStrategy,
         spec,
         preloadPath: desktopPreloadPath(),
+        pickDirectory: () => this.pickDirectory(),
         buildApplicationMenuItems: () => this.buildApplicationMenuItems(),
         isQuitting: () => this.quitting,
         buildTrayTemplate: () => this.buildTrayTemplate(spec),
@@ -336,6 +337,8 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
         rendererRecoveryCopy: () => rendererRecoveryCopy[this.currentLocale],
         logError: message => { this.logError(message) },
         mainWindowState: this.mainWindowState,
+        platformLoginTitle: () => PLATFORM_LOGIN_TITLE[this.currentLocale],
+        setupOnboarding: this.setupOnboarding,
         chromeActions: {
           ...(remoteOffer ? { remoteControl: {
             read: () => remoteOffer.read(),
@@ -385,6 +388,30 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   /** @inheritdoc */
   notifyAttention(notification: DesktopNotification): void {
     this.generation?.notifyAttention(notification)
+  }
+
+  /** @inheritdoc */
+  platformLogin(request: DesktopPlatformLoginRequest): void {
+    if (this.quitting) return
+    if (request.action === 'close') {
+      this.generation?.closePlatformLogin()
+      if (request.focus) this.show()
+      return
+    }
+    if (!isPlatformLoginDestination(request.url)) {
+      this.logError('dsh-plugin-desktop: refused a platform sign-in page outside HTTPS or loopback HTTP')
+      return
+    }
+    const url = platformLoginUrl(request.url, nativeTheme.shouldUseDarkColors)
+    // A system browser reaches the Host's loopback callback only while browser access is on;
+    // otherwise the built-in window replays the callback with the renderer's credentials.
+    if (request.external) {
+      void shell.openExternal(url).catch((cause: unknown) => {
+        this.logError(`dsh-plugin-desktop: failed to open the platform sign-in page: ${cause instanceof Error ? cause.message : String(cause)}`)
+      })
+      return
+    }
+    this.generation?.openPlatformLogin(url)
   }
 
   /** @inheritdoc */
@@ -586,10 +613,6 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   setThemeSource(source: DesktopThemeSource): void {
     if (this.platform !== 'linux' && this.generation !== undefined) {
       nativeTheme.themeSource = source
-      // Windows can retain the preceding DWM Mica palette until the window is
-      // recomposed (for example after minimize/restore). Reapplying the active
-      // material invalidates the backdrop immediately after a live theme change.
-      this.generation.refreshThemeMaterial()
     }
   }
 
@@ -645,6 +668,7 @@ export class ElectronDesktopRuntime implements DesktopRuntime {
   prepareToQuit(): void {
     this.quitting = true
     this.generation?.stopRendererRecovery()
+    this.generation?.closePlatformLogin()
     this.stopRendererBootMonitoring()
   }
 

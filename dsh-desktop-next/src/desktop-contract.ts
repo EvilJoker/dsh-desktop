@@ -14,7 +14,8 @@ export type DesktopSettingsPage = 'general' | 'permissions'
 export interface DesktopPreferences {
   closeToTray: boolean
   macosMaterial: 'off' | 'transparent'
-  windowsMaterial: 'off' | 'mica'
+  /** Legacy key kept for the shared settings surface; Windows has no selectable material. */
+  windowsMaterial: 'off'
   /** Accepted for the shared settings surface; Linux still renders an opaque frame. */
   linuxMaterial: 'off' | 'transparent'
   browserAccess: boolean
@@ -46,9 +47,9 @@ export interface DesktopState {
   busy: boolean
   failure: string
   safeMode: boolean
-  /** The selected Profile is in setup (first run or reopened); no Host has started. */
+  /** The selected Profile needs Desktop setup in the running official client. */
   onboarding?: boolean
-  /** Initial saved choice for the Host-independent wizard; live state belongs to pluginManager. */
+  /** Initial saved choice for setup; live state belongs to pluginManager. */
   onboardingComputerUse?: boolean
   home: string
   platform: string
@@ -56,7 +57,6 @@ export interface DesktopState {
   updates?: import('./update-state.ts').NextUpdateState
   trayAvailable: boolean
   notificationsAvailable: boolean
-  windowsMicaSupported: boolean
   browserUrl: string | null
   lan: DesktopLanHttpsRuntimeSnapshot | null
   recovery?: {
