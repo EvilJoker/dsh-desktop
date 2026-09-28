@@ -496,6 +496,92 @@ npx 缓存路径:`~/.npm/_npx/<hash>/node_modules/chrome-devtools-mcp/build/src/
 - **自动更新检查跳过**(`Development, unpackaged, and Linux launches do not download an installer`)
 - **XDG Desktop Portal 缺失**:`dialog.showOpenDialog` 退化但不影响主流程
 
+### 7.6 AppImage / deb / linux-unpacked 打包尝试(2026-09-23 失败记录)
+
+> **结论:本地打包走不通。** AppImage、deb、`linux-unpacked/` 三条路径都强制要求 `fs-ext` native binding 编译,而 `fs-ext@2.1.1` 跟 `Electron 43` 的 V8 13 API 不兼容。**upstream 自己也卡在这一步**(FAQ 原话:"Linux x64 AppImage 与 deb 已由 CI 构建,但尚未随任何已发布版本一同发出")。
+
+#### 期望产物
+
+| 路径 | 命令 | 产物 |
+|------|------|------|
+| AppImage + deb | `yarn workspace dsh-plugin-desktop dist:linux` | `DSH-Desktop-*-x64.AppImage` + `dsh-desktop_*_amd64.deb` |
+| 未打包目录 | `yarn workspace dsh-plugin-desktop package:dir` | `dist/linux-unpacked/dsh-desktop`(等同 AppImage 解压后) |
+
+#### 失败链(自前向后)
+
+```
+yarn install                                       ✅ 成功(1573 包,4m46s,见 §6.2)
+  ↓
+DSH_AA_SOURCE_REF=b23d28cea6ef… aa:prepare-release ✅ 复用现有 artifact
+  ↓
+yarn workspace dsh-community-market build          ✅ 成功(485 ms)
+  ↓
+yarn workspace dsh-plugin-desktop build           ✅ 成功(tsdown + vite + 140 tests)
+  ↓
+yarn workspace dsh-plugin-desktop package:dir      ❌ 失败 — prepare-fs-ext 编译
+   └── node-gyp rebuild fs-ext@2.1.1
+        └── v8::Persistent ctor / Local<v8::String> → Local<v8::Name>
+```
+
+#### 核心错误
+
+`fs-ext@2.1.1/fs-ext.cc` 用 2017 年 V8 API,Electron 43 内嵌 V8 13 改了签名:
+
+```cpp
+// fs-ext.cc:587
+NODE_DEFINE_CONSTANT(constants, F_GETLK);
+// ↑ 触发 nan_maybe_43_inl.h 里 v8::Object::Set 的调用
+//   Set(context, key, value) 现在要求 key 是 Local<v8::Name>,不是 Local<v8::Value>
+error: cannot convert 'Local<v8::String>' to 'Local<v8::Name>'
+
+// 同时 Persistent ctor 也变了
+error: no matching function for call to
+  'v8::Persistent<T, M>::Persistent(v8::Isolate*, v8::Local<v8::Function>&)'
+```
+
+`nan@2.28.0` 没适配 V8 13。改 nan 的 inline header(几行 type cast)目前能过一半,但 V8 13 还有其他 API 收紧(`Undefined()` 返回 `Local<Primitive>` 而非 `Local<Value>`),继续 patch 会变成链式 hack。
+
+#### 走过的路(都不通)
+
+1. **本地 GCC 升级**:`yum install devtoolset-10` 不需要 — Ubuntu 24.04 镜像里 GCC 13 已够 C++20,但**问题不在编译器,在 API**。
+2. **用 Docker Ubuntu 24.04**:`docker load` + `docker build` 出 `dsh-builder:ubuntu24` 镜像(684 MB,Node 24 + Yarn 4 + 全套打包工具),`yarn install` 跑通,但 `fs-ext` 编译依然挂同一错。
+3. **降 Electron 版本**:upstream 自己用 `electron@43.3.0`,我们也是 43.3.0,降版本不解决问题(他们也跑不通)。
+4. **改 fs-ext 源码**:侵入式改 upstream 代码,可能跳出 undefined 行为,放弃。
+
+#### 临时可工作流
+
+- **`yarn start` 完全不受影响**:`fs-ext` 编译只对 `prepare-fs-ext` 路径必需,`yarn start` 走 `lib/bin.js` 直接跑 Electron,不调 native binding。
+- **AppImage / deb 路径被阻塞**:等 upstream 修 `fs-ext` 或换 `flock` 实现。
+
+#### 重建材料已归档
+
+为方便后续接着搞,以下三份都已存到 `/home/10312862@zte.intra/.cache/20projects/P_2026422_桌面助手/`:
+
+| 路径 | 大小 | 用途 |
+|------|------|------|
+| `docker/dsh-builder-ubuntu24.tar` | 684 MB | Ubuntu 24.04 + Node 24 + Yarn 4 + 打包工具完整镜像 |
+| `docker/ubuntu-24.04.tar` | 77 MB | 基础层(重建 dsh-builder 时需要) |
+| `git/dsh-desktop-master.bundle` | 52.9 MB | master 分支完整历史 |
+| `workspace/dsh-desktop-master-snapshot.tar.gz` | 72.8 MB | 工作树快照(17,633 文件,排除 node_modules / .git / self-dev-old) |
+
+加载 + 重建:
+
+```bash
+docker load -i docker/dsh-builder-ubuntu24.tar
+docker run --rm -d --name dsh-build \
+  -v $(pwd)/dsh-desktop:/work \
+  dsh-builder:ubuntu24 \
+  bash -c 'tail -f /dev/null'
+
+docker exec dsh-build bash -c 'cd /work && yarn install --immutable'
+docker exec dsh-build bash -c 'cd /work && \
+  DSH_AA_SOURCE_REF=b23d28cea6ef90ba628ca640bc73a1557d480e28 \
+  yarn aa:prepare-release'
+docker exec dsh-build bash -c 'cd /work && yarn workspace dsh-community-market build'
+docker exec dsh-build bash -c 'cd /work && yarn workspace dsh-plugin-desktop dist:linux'
+ls dsh-plugin-desktop/dist/   # AppImage + deb
+```
+
 ## 8. 验证清单
 
 ```bash
@@ -555,7 +641,82 @@ git checkout dsh-plugin-desktop/src/bin.ts
 - Cordis 框架: <https://github.com/cordiverse/cordis>
 - chrome-devtools-mcp: <https://github.com/ChromeDevTools/chrome-devtools-mcp>
 
+## 11. MCP 配置双 profile 同步约定(2026-09-23 补)
+
+> 这一节专门解决"web profile 装了 MCP,desktop profile 没装"导致 chrome-devtools
+> 工具在 dsh-desktop 里消失的问题。
+
+**问题描述**
+
+DSH 的 MCP server 不是走单文件 `~/.claude/mcp.json` 或 `~/.cursor/mcp.json`,
+而是嵌在每个 profile 的 `~/.dsh/profiles/<name>/cordis.patch.yml` 里,
+由 `@deepseek-ai/dsh-mcp-client` 这个 cordis entry 解析。
+两个 profile (`web` / `desktop`) 各自独立维护 patch YAML,
+互不感知 —— 在 web GUI 里调通的 chrome-devtools,
+切到 dsh-desktop 就"丢"了,因为 desktop profile 的 patch 是空的。
+
+**机制说明**
+
+要启用 chrome-devtools MCP,两件事缺一不可:
+
+1. **profile 的 `package.json` 里必须声明依赖** `@deepseek-ai/dsh-mcp-client`
+   (否则 cordis loader 想 `import('@deepseek-ai/dsh-mcp-client')` 会找不到包)。
+   `web` profile 早期就装好了,`desktop` profile 是空 `dependencies: {}`。
+2. **profile 的 `cordis.patch.yml` 里必须有一段 `- insert:`** 注册
+   `name: '@deepseek-ai/dsh-mcp-client'`、transport=stdio、command=`npx`、
+   `args: ['-y', 'chrome-devtools-mcp@latest']`。
+   同时必须配套 `reconnect` 块,否则 npx 第一次拉包超时 MCP entry 会永久卡 pending。
+
+**已知坑与对策**
+
+| 坑 | 对策 |
+|---|---|
+| desktop profile 初始化时空 `package.json` + 空 `cordis.patch.yml` | 每次升级/重装 dsh-desktop 后,手动把 web profile 的 chrome-devtools MCP 片段复制到 desktop profile,再 `cd ~/.dsh/profiles/desktop && pnpm install` 拉一次 `@deepseek-ai/dsh-mcp-client`。 |
+| web profile 加了新 MCP,desktop 不会自动同步 | 永远记得"两处都改"。本约定就是把这个心智负担写明,后续再考虑写一个 `sync-mcp-snippet.sh` 抽 single source of truth(没做,因为 cordis-loader 是否支持跨文件 YAML anchor 没核实,内联复制最稳)。 |
+| desktop profile 启动时 MCP entry 报 "pending" | 八成是 `npx -y chrome-devtools-mcp@latest` 拉包超时。把 `toolCallTimeoutMs` 调大,或预先 `npx -y chrome-devtools-mcp@latest --help` 触发一次下载让 npx 缓存命中。 |
+| chrome-devtools-mcp 连不上 `127.0.0.1:9222` | 检查 dsh-desktop 是否带了 `ELECTRON_REMOTE_DEBUGGING=1` 启动(`self-dev/dshdesktop` 默认开)。否则 CDP 端口没监听,MCP 一调用就 ECONNREFUSED。 |
+
+**最小可复制片段**(任一 profile 的 `cordis.patch.yml` 都需要这一段):
+
+```yaml
+- insert:
+    - id: mcp-chrome-devtools
+      name: '@deepseek-ai/dsh-mcp-client'
+      config:
+        serverName: chrome-devtools
+        transport: stdio
+        command: npx
+        args: ['-y', 'chrome-devtools-mcp@latest']
+        toolCallTimeoutMs: 60000
+        failOnStartupError: false
+        reconnect:
+          enabled: true
+          initialDelayMs: 500
+          maxDelayMs: 30000
+          maxAttempts: 10
+```
+
+**快速核查清单**(chrome-devtools 在某个 profile 里"消失"时按顺序排):
+
+```bash
+# 1. 包是否装上?
+ls ~/.dsh/profiles/<profile>/node_modules/@deepseek-ai/dsh-mcp-client/package.json
+
+# 2. patch 里有没有 insert?
+grep -A3 'mcp-chrome-devtools' ~/.dsh/profiles/<profile>/cordis.patch.yml
+
+# 3. dsh-desktop 是不是带了 CDP?
+grep ELECTRON_REMOTE_DEBUGGING ~/.config/DSH\ Desktop/lifecycle-events/startup.jsonl | tail -3
+
+# 4. CDP 端口真在听?
+curl -s http://127.0.0.1:9222/json/version | head -3
+```
+
+缺哪步就补哪步,不要试图"重启 DSH 大法" —— cordis loader 在 `patchReload: live`
+模式下对 patch YAML 是 hot reload,但对 `package.json` 改动必须重启整个 dsh 进程
+才会触发新的 npm resolve。
+
 ---
 
-文档版本: 2026-09-23
+文档版本: 2026-09-23 (含 MCP 双 profile 同步说明)
 作者: DSH Desktop 启动调试记录(在 NewStartOS / Node 24 / Yarn 4.18 / Electron 43.3 / DSH 0.1.5-rc.1 环境实测)

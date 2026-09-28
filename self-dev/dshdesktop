@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+# dshdesktop — 启动 DSH Desktop (Electron) 并暴露 CDP 给 chrome-devtools-mcp
+#
+# 包装 `yarn start` 流程。Linux 上 yarn start 跑通,但 AppImage/deb/linux-unpacked 路径
+# 因为 fs-ext@2.1.1 vs Electron 43 (V8 13) API 不兼容走不通(见 self-dev/develop-on-zte-cloud-desktop.md §7.6)。
+# 等官方修复后改这里即可。
+#
+# 用法:
+#   dshdesktop                       # 前台启动 (Ctrl+C 退出)
+#   dshdesktop --no-cdp               # 不开 CDP
+#   dshdesktop --profile <name>       # 指定 profile(传给 cordis)
+#   dshdesktop --help                 # 帮助
+
+set -euo pipefail
+
+SCRIPT_NAME=$(basename "$0")
+REPO_ROOT="/home/10312862@zte.intra/.pkm/20_Projects/P_20260422_桌面助手"
+LOG_DIR="/tmp"
+LOG_PREFIX="dsh-desktop"
+
+usage() {
+  cat <<EOF
+$SCRIPT_NAME — 启动 DSH Desktop
+
+用法:
+  $SCRIPT_NAME [--no-cdp] [--profile <name>] [--help]
+
+参数:
+  --no-cdp         不开 Chrome DevTools Protocol (默认开,127.0.0.1:9222)
+  --profile NAME   指定 cordis profile 名(默认 desktop)
+  --help, -h       显示这个帮助
+
+环境变量覆盖:
+  ELECTRON_REMOTE_DEBUGGING_PORT    (默认 9222)
+  ELECTRON_REMOTE_DEBUGGING_HOST    (默认 127.0.0.1)
+  DSH_PROFILE                       (等价于 --profile)
+
+例子:
+  $SCRIPT_NAME                       # 启动 + CDP
+  $SCRIPT_NAME --no-cdp             # 启动不开 CDP
+  chrome-devtools start --browserUrl=http://127.0.0.1:9222   # 另开终端接上 MCP
+EOF
+}
+
+# 参数解析
+USE_CDP=1
+PROFILE="desktop"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --no-cdp) USE_CDP=0; shift ;;
+    --profile) PROFILE="$2"; shift 2 ;;
+    --profile=*) PROFILE="${1#*=}"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "未知参数: $1" >&2; usage; exit 1 ;;
+  esac
+done
+
+# 校验仓库
+if [[ ! -d "$REPO_ROOT/dsh-plugin-desktop/lib" ]]; then
+  echo "[$SCRIPT_NAME] ❌ 找不到 $REPO_ROOT/dsh-plugin-desktop/lib" >&2
+  echo "[$SCRIPT_NAME]    请确认仓库路径,或跑一次 yarn workspace dsh-plugin-desktop build" >&2
+  exit 1
+fi
+
+# CDP 环境
+if [[ "$USE_CDP" -eq 1 ]]; then
+  export ELECTRON_REMOTE_DEBUGGING=1
+  export ELECTRON_REMOTE_DEBUGGING_PORT="${ELECTRON_REMOTE_DEBUGGING_PORT:-9222}"
+  export ELECTRON_REMOTE_DEBUGGING_HOST="${ELECTRON_REMOTE_DEBUGGING_HOST:-127.0.0.1}"
+  echo "[$SCRIPT_NAME] CDP enabled at http://${ELECTRON_REMOTE_DEBUGGING_HOST}:${ELECTRON_REMOTE_DEBUGGING_PORT}"
+else
+  unset ELECTRON_REMOTE_DEBUGGING ELECTRON_REMOTE_DEBUGGING_PORT ELECTRON_REMOTE_DEBUGGING_HOST
+  echo "[$SCRIPT_NAME] CDP disabled"
+fi
+
+# Profile 透传
+export DSH_PROFILE="$PROFILE"
+echo "[$SCRIPT_NAME] profile: $DSH_PROFILE"
+
+# 检查 lib/bin.js
+if [[ ! -f "$REPO_ROOT/dsh-plugin-desktop/lib/bin.js" ]]; then
+  echo "[$SCRIPT_NAME] ❌ lib/bin.js 不存在,需要先 build:" >&2
+  echo "[$SCRIPT_NAME]    yarn workspace dsh-plugin-desktop build" >&2
+  exit 1
+fi
+
+# 日志位置
+TS=$(date +%Y%m%d-%H%M%S)
+LOG_FILE="$LOG_DIR/${LOG_PREFIX}-${TS}.log"
+echo "[$SCRIPT_NAME] log: $LOG_FILE"
+echo "[$SCRIPT_NAME] 启动 DSH Desktop (Ctrl+C 退出)..."
+
+# 切到仓库跑 yarn start(等价于 cd dsh-plugin-desktop && node lib/bin.js)
+cd "$REPO_ROOT"
+exec corepack yarn start 2>&1 | tee "$LOG_FILE"
